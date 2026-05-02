@@ -167,6 +167,9 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 			}
 		}
 		c.beads[item.ID] = cloneBead(item)
+		if len(item.Dependencies) > 0 {
+			c.deps[item.ID] = cloneDeps(item.Dependencies)
+		}
 		delete(c.dirty, item.ID)
 		delete(c.deletedSeq, item.ID)
 		if !recentLocalMutation(c.localBeadAt[item.ID], now) {
@@ -185,6 +188,9 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 			continue
 		}
 		c.beads[id] = bead
+		if len(bead.Dependencies) > 0 {
+			c.deps[id] = cloneDeps(bead.Dependencies)
+		}
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
 		if !recentLocalMutation(c.localBeadAt[id], now) {
@@ -294,6 +300,9 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 				return Bead{}, ErrNotFound
 			}
 			c.beads[id] = cloneBead(fresh)
+			if len(fresh.Dependencies) > 0 {
+				c.deps[id] = cloneDeps(fresh.Dependencies)
+			}
 			delete(c.dirty, id)
 			delete(c.deletedSeq, id)
 			delete(c.beadSeq, id)
@@ -362,6 +371,60 @@ func (c *CachingStore) Ready() ([]Bead, error) {
 	}
 	c.mu.RUnlock()
 	return c.backing.Ready()
+}
+
+// CachedReady returns ready beads from the in-memory active read model.
+// The boolean reports whether the cache was initialized enough to answer
+// without touching the backing store. Unlike Ready, this can answer from a
+// partial active cache only when each open bead has known dependency coverage.
+func (c *CachingStore) CachedReady() ([]Bead, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.state != cacheLive && c.state != cachePartial {
+		return nil, false
+	}
+	if c.primePartialErr != nil || len(c.dirty) > 0 {
+		return nil, false
+	}
+
+	statusByID := make(map[string]string, len(c.beads))
+	openBeads := make([]Bead, 0, len(c.beads))
+	for _, b := range c.beads {
+		statusByID[b.ID] = b.Status
+		if b.Status == "open" && !IsReadyExcludedType(b.Type) {
+			openBeads = append(openBeads, cloneBead(b))
+		}
+	}
+
+	result := make([]Bead, 0, len(openBeads))
+	for _, b := range openBeads {
+		deps, ok := c.deps[b.ID]
+		switch {
+		case ok:
+		case c.depsComplete:
+			deps = nil
+		default:
+			return nil, false
+		}
+		if cachedBeadReady(statusByID, deps) {
+			result = append(result, cloneBead(b))
+		}
+	}
+	return result, true
+}
+
+func cachedBeadReady(statusByID map[string]string, deps []Dep) bool {
+	for _, dep := range deps {
+		switch dep.Type {
+		case "blocks", "waits-for", "conditional-blocks":
+		default:
+			continue
+		}
+		if status, ok := statusByID[dep.DependsOnID]; ok && status != "closed" {
+			return false
+		}
+	}
+	return true
 }
 
 // Children returns beads with the given parent ID.

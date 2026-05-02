@@ -1173,6 +1173,89 @@ func TestCachingStoreReadyTreatsMissingDepTargetAsClosedWithoutBackingGet(t *tes
 	}
 }
 
+func TestCachingStoreCachedReadyUsesPrimedDependencies(t *testing.T) {
+	t.Parallel()
+	mem := beads.NewMemStore()
+	blocker, err := mem.Create(beads.Bead{Title: "Blocker"})
+	if err != nil {
+		t.Fatalf("Create(blocker): %v", err)
+	}
+	blocked, err := mem.Create(beads.Bead{Title: "Blocked"})
+	if err != nil {
+		t.Fatalf("Create(blocked): %v", err)
+	}
+	ready, err := mem.Create(beads.Bead{Title: "Ready"})
+	if err != nil {
+		t.Fatalf("Create(ready): %v", err)
+	}
+	if err := mem.DepAdd(blocked.ID, blocker.ID, "blocks"); err != nil {
+		t.Fatalf("DepAdd: %v", err)
+	}
+
+	cache := beads.NewCachingStoreForTest(mem, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+	got, ok := cache.CachedReady()
+	if !ok {
+		t.Fatal("CachedReady reported cache unavailable")
+	}
+	ids := map[string]bool{}
+	for _, b := range got {
+		ids[b.ID] = true
+	}
+	if !ids[blocker.ID] || !ids[ready.ID] || ids[blocked.ID] {
+		t.Fatalf("CachedReady ids = %v, want blocker and ready only", ids)
+	}
+}
+
+func TestCachingStoreCachedReadyUsesWriteThroughDependencies(t *testing.T) {
+	t.Parallel()
+	mem := beads.NewMemStore()
+	blocker, err := mem.Create(beads.Bead{Title: "Blocker"})
+	if err != nil {
+		t.Fatalf("Create(blocker): %v", err)
+	}
+	blocked, err := mem.Create(beads.Bead{Title: "Blocked"})
+	if err != nil {
+		t.Fatalf("Create(blocked): %v", err)
+	}
+
+	cache := beads.NewCachingStoreForTest(mem, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+	if err := cache.DepAdd(blocked.ID, blocker.ID, "blocks"); err != nil {
+		t.Fatalf("DepAdd: %v", err)
+	}
+
+	got, ok := cache.CachedReady()
+	if !ok {
+		t.Fatal("CachedReady reported cache unavailable")
+	}
+	ids := map[string]bool{}
+	for _, b := range got {
+		ids[b.ID] = true
+	}
+	if !ids[blocker.ID] || ids[blocked.ID] {
+		t.Fatalf("CachedReady ids = %v, want blocker only", ids)
+	}
+}
+
+func TestCachingStoreCachedReadyUnavailableForUnknownEventDependencies(t *testing.T) {
+	t.Parallel()
+	cache := beads.NewCachingStoreForTest(beads.NewMemStore(), nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	cache.ApplyEvent("bead.created", []byte(`{"id":"gc-1","title":"Event task","status":"open","issue_type":"task"}`))
+
+	if ready, ok := cache.CachedReady(); ok {
+		t.Fatalf("CachedReady ok with unknown event dependency coverage, ready=%v", ready)
+	}
+}
+
 func TestCachingStoreListPartialAllowScanReturnsCompleteActiveSnapshot(t *testing.T) {
 	t.Parallel()
 	mem := beads.NewMemStore()
