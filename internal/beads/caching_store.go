@@ -467,6 +467,9 @@ func depsFromBeads(beadMap map[string]Bead, depMap map[string][]Dep, useDepMap b
 }
 
 func depsFromBeadFields(b Bead) []Dep {
+	// Structured dependencies are the authoritative bead representation when
+	// present; Needs is the legacy shorthand used when no dependency objects
+	// were carried on the bead payload.
 	if len(b.Dependencies) > 0 {
 		return cloneDeps(b.Dependencies)
 	}

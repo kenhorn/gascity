@@ -53,9 +53,7 @@ func (c *CachingStore) Update(id string, opts UpdateOpts) error {
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
 	c.beads[id] = cloneBead(fresh)
-	if len(fresh.Dependencies) > 0 {
-		c.deps[id] = cloneDeps(fresh.Dependencies)
-	}
+	c.deps[id] = depsFromBeadFields(fresh)
 	delete(c.dirty, id)
 	delete(c.deletedSeq, id)
 	c.markFreshLocked(time.Now())

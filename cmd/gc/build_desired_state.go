@@ -69,6 +69,7 @@ type defaultScaleCheckTarget struct {
 	template string
 	storeKey string
 	store    beads.Store
+	err      error
 }
 
 func evaluatePendingPools(
@@ -175,6 +176,9 @@ func evaluatePendingPoolsMap(
 // ACP route registration, and session bead auto-creation. These are safe
 // to repeat because hooks are installed to stable filesystem paths,
 // ACP routing is idempotent, and bead creation is deduplicated by template.
+// Rig-scoped agents with an implicit default scale_check require rigStores;
+// when rigStores is missing, they report zero new demand plus a diagnostic
+// rather than counting work from the wrong store.
 func buildDesiredState(
 	cityName, cityPath string,
 	beaconTime time.Time,
@@ -642,8 +646,11 @@ func defaultScaleCheckTargetForAgent(
 	if rigStores != nil {
 		if rigStore := rigStores[rigName]; rigStore != nil {
 			target.store = rigStore
+			return target
 		}
 	}
+	target.store = nil
+	target.err = fmt.Errorf("default scale_check %s: rig store %q unavailable", target.template, rigName)
 	return target
 }
 
@@ -665,8 +672,13 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 			continue
 		}
 		counts[template] = 0
+		if target.err != nil {
+			errs = append(errs, target.err)
+		}
 		if target.store == nil {
-			errs = append(errs, fmt.Errorf("default scale_check %s: store unavailable", template))
+			if target.err == nil {
+				errs = append(errs, fmt.Errorf("default scale_check %s: store unavailable", template))
+			}
 			continue
 		}
 		key := strings.TrimSpace(target.storeKey)
@@ -701,14 +713,12 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 }
 
 func listForControllerDemand(store beads.Store, query beads.ListQuery) ([]beads.Bead, error) {
-	if cached, ok := store.(interface {
+	if _, ok := store.(interface {
 		CachedList(beads.ListQuery) ([]beads.Bead, bool)
 	}); ok {
-		cachedQuery := query
-		cachedQuery.Live = false
-		if items, ok := cached.CachedList(cachedQuery); ok {
-			return items, nil
-		}
+		cacheQuery := query
+		cacheQuery.Live = false
+		return store.List(cacheQuery)
 	}
 	liveQuery := query
 	liveQuery.Live = true
@@ -716,6 +726,9 @@ func listForControllerDemand(store beads.Store, query beads.ListQuery) ([]beads.
 }
 
 func readyForControllerDemand(store beads.Store) ([]beads.Bead, error) {
+	// Controller demand reads are intentionally cache-tolerant, not
+	// authoritative lifecycle gates; CachedReady falls back whenever the cache
+	// has dirty or unknown dependency coverage.
 	if cached, ok := store.(interface {
 		CachedReady() ([]beads.Bead, bool)
 	}); ok {

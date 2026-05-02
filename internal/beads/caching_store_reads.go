@@ -32,11 +32,11 @@ func (c *CachingStore) List(query ListQuery) ([]Bead, error) {
 		primePartialErr := c.primePartialErr
 		if len(c.dirty) > 0 {
 			c.mu.RUnlock()
-			return c.backing.List(query)
+			return c.backing.List(liveListQuery(query))
 		}
 		if primePartialErr != nil {
 			c.mu.RUnlock()
-			return c.backing.List(query)
+			return c.backing.List(liveListQuery(query))
 		}
 		// PrimeActive loads the full active set (open + in_progress), so
 		// active-only queries are complete even before the history prime finishes.
@@ -64,10 +64,10 @@ func (c *CachingStore) List(query ListQuery) ([]Bead, error) {
 		// The cache never has a complete closed-only or parent-history view, so
 		// preserve the old backing-store behavior for those query shapes.
 		if query.Status == "closed" || query.ParentID != "" {
-			return c.backing.List(query)
+			return c.backing.List(liveListQuery(query))
 		}
 
-		all, err := c.backing.List(query)
+		all, err := c.backing.List(liveListQuery(query))
 		if err != nil {
 			if !IsPartialResult(err) {
 				return finish(cached, nil)
@@ -88,7 +88,12 @@ func (c *CachingStore) List(query ListQuery) ([]Bead, error) {
 		return finish(cached, err)
 	}
 	c.mu.RUnlock()
-	return c.backing.List(query)
+	return c.backing.List(liveListQuery(query))
+}
+
+func liveListQuery(query ListQuery) ListQuery {
+	query.Live = true
+	return query
 }
 
 // CachedList returns query results from the in-memory cache only. The boolean
@@ -167,9 +172,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 			}
 		}
 		c.beads[item.ID] = cloneBead(item)
-		if len(item.Dependencies) > 0 {
-			c.deps[item.ID] = cloneDeps(item.Dependencies)
-		}
+		c.deps[item.ID] = depsFromBeadFields(item)
 		delete(c.dirty, item.ID)
 		delete(c.deletedSeq, item.ID)
 		if !recentLocalMutation(c.localBeadAt[item.ID], now) {
@@ -188,9 +191,7 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, item
 			continue
 		}
 		c.beads[id] = bead
-		if len(bead.Dependencies) > 0 {
-			c.deps[id] = cloneDeps(bead.Dependencies)
-		}
+		c.deps[id] = depsFromBeadFields(bead)
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
 		if !recentLocalMutation(c.localBeadAt[id], now) {
@@ -300,9 +301,7 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 				return Bead{}, ErrNotFound
 			}
 			c.beads[id] = cloneBead(fresh)
-			if len(fresh.Dependencies) > 0 {
-				c.deps[id] = cloneDeps(fresh.Dependencies)
-			}
+			c.deps[id] = depsFromBeadFields(fresh)
 			delete(c.dirty, id)
 			delete(c.deletedSeq, id)
 			delete(c.beadSeq, id)

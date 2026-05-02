@@ -63,6 +63,87 @@ func TestCollectAssignedWorkBeads_UsesCachedReadyEventStateForAssignedOpenHandof
 	}
 }
 
+func TestCollectAssignedWorkBeads_FallsBackLiveWhenSparseDepHookInvalidatesCachedReady(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dep add", func(t *testing.T) {
+		t.Parallel()
+
+		backing := beads.NewMemStore()
+		blocker, err := backing.Create(beads.Bead{
+			Title:  "blocker",
+			Type:   "task",
+			Status: "open",
+		})
+		if err != nil {
+			t.Fatalf("Create(blocker): %v", err)
+		}
+		handoff, err := backing.Create(beads.Bead{
+			Title:    "handoff",
+			Type:     "task",
+			Status:   "open",
+			Assignee: "worker",
+		})
+		if err != nil {
+			t.Fatalf("Create(handoff): %v", err)
+		}
+		cache := beads.NewCachingStoreForTest(backing, nil)
+		if err := cache.PrimeActive(); err != nil {
+			t.Fatalf("PrimeActive: %v", err)
+		}
+
+		if err := backing.DepAdd(handoff.ID, blocker.ID, "blocks"); err != nil {
+			t.Fatalf("backing DepAdd(%s <- %s): %v", handoff.ID, blocker.ID, err)
+		}
+		cache.ApplyEvent("bead.updated", []byte(`{"id":"`+handoff.ID+`","title":"handoff","status":"open","issue_type":"task","assignee":"worker","created_at":"2026-01-01T00:00:00Z"}`))
+
+		got, _ := collectAssignedWorkBeads(&config.City{}, cache)
+		if len(got) != 0 {
+			t.Fatalf("collectAssignedWorkBeads() = %#v, want sparse dep-add event to force live blocked result", got)
+		}
+	})
+
+	t.Run("dep remove", func(t *testing.T) {
+		t.Parallel()
+
+		backing := beads.NewMemStore()
+		blocker, err := backing.Create(beads.Bead{
+			Title:  "blocker",
+			Type:   "task",
+			Status: "open",
+		})
+		if err != nil {
+			t.Fatalf("Create(blocker): %v", err)
+		}
+		handoff, err := backing.Create(beads.Bead{
+			Title:    "handoff",
+			Type:     "task",
+			Status:   "open",
+			Assignee: "worker",
+		})
+		if err != nil {
+			t.Fatalf("Create(handoff): %v", err)
+		}
+		if err := backing.DepAdd(handoff.ID, blocker.ID, "blocks"); err != nil {
+			t.Fatalf("backing DepAdd(%s <- %s): %v", handoff.ID, blocker.ID, err)
+		}
+		cache := beads.NewCachingStoreForTest(backing, nil)
+		if err := cache.PrimeActive(); err != nil {
+			t.Fatalf("PrimeActive: %v", err)
+		}
+
+		if err := backing.DepRemove(handoff.ID, blocker.ID); err != nil {
+			t.Fatalf("backing DepRemove(%s <- %s): %v", handoff.ID, blocker.ID, err)
+		}
+		cache.ApplyEvent("bead.updated", []byte(`{"id":"`+handoff.ID+`","title":"handoff","status":"open","issue_type":"task","assignee":"worker","created_at":"2026-01-01T00:00:00Z"}`))
+
+		got, _ := collectAssignedWorkBeads(&config.City{}, cache)
+		if len(got) != 1 || got[0].ID != handoff.ID {
+			t.Fatalf("collectAssignedWorkBeads() = %#v, want [%s] after sparse dep-remove event forced live ready result", got, handoff.ID)
+		}
+	})
+}
+
 func TestSessionHasOpenAssignedWorkInStore_UsesLiveOpenOwnership(t *testing.T) {
 	t.Parallel()
 
